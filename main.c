@@ -3,106 +3,88 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define WIDTH_MAX 4096
-#define HEIGHT_MAX 4096
+#define WIDTH_MAX 1024
+#define HEIGHT_MAX 1024
 
 #undef uint
-typedef uint32_t uint;
+// PGMでは各要素の値は16ビットで十分
+typedef unsigned short uint;
 
 typedef struct {
     char magic[3];
     size_t width;
     size_t height;
     uint max;
-    uint val[HEIGHT_MAX][WIDTH_MAX];
-} Image;
+    uint image[HEIGHT_MAX][WIDTH_MAX];
+} PNM;
 
-Image* read_image(const char* filename) {
-    // open file
+// ファイルからPGMイメージを読み出す
+bool read_image(const char* filename, PNM* img) {
     FILE* f = fopen(filename, "r");
     if (f == NULL) {
-        perror("fopen");
-        return NULL;
+        perror("read_image(fopen)");
+        return false;
     }
 
-    // allocate memory
-    Image* img = calloc(1, sizeof(Image));
+    // ヘッダ読み出し
+    fscanf(f, "%2s %zu %zu %hu", img->magic, &img->width, &img->height, &img->max);
 
-    if (img == NULL) {
-        perror("malloc");
-        goto ERROR;
-    }
-
-    // read header
-    int n = fscanf(f, "%2s %zu %zu", img->magic, &img->width, &img->height);
-
-    if (n != 3) {
-        fprintf(stderr, "Corrupted header");
-        goto ERROR;
-    }
-
-    img->magic[2] = '\0';
-
-    char ver = img->magic[1];
-    if (img->magic[0] != 'P' || '1' > ver || ver > '3') {
-        fprintf(stderr, "Unknown version \"%s\"", img->magic);
-        goto ERROR;
-    }
-
-    // set max
-    switch (ver) {
-        case '1': img->max = 1; break;
-        default : fscanf(f, "%" PRIu32 "u", &img->max); break;
-    }
-
+    // ピクセル読み出し
     for(size_t i = 0; i < img->height; i++) {
-        // with ppm, each pixel has 3 values
-        size_t w = ver == '3' ? img->width*3 : img->width;
-
-        for(size_t j = 0; j < w; j++) {
+        for(size_t j = 0; j < img->width; j++) {
             uint tmp;
-            fscanf(f, "%" PRIu32 "u", &tmp);
+            fscanf(f, "%hu", &tmp);
             if (tmp > img->max) {
-                fprintf(stderr, "Warning: value \"%" PRIu32 "\"exceeds the max \"%" PRIu32 "\", wrapping", tmp, img->max);
+                fprintf(stderr, "read_image: pixel \"%hu\" (%zu %zu) exceeds the max \"%hu\"\n", tmp, i, j, img->max);
                 tmp = img->max;
             }
-            img->val[i][j] = tmp;
+            img->image[i][j] = tmp;
         }
     }
 
-    return img;
-
-ERROR:
-    free(img);
-    return NULL;
+    fclose(f);
+    return true;
 }
 
-void write_image(const char* filename, const Image* img) {
+// ファイルへPGMイメージを書き出す
+bool write_image(const char* filename, const PNM* img) {
     FILE* f = fopen(filename, "w");
-    fprintf(f, "%s\n%zu %zu\n", img->magic, img->width, img->height);
-
-    switch (img->magic[1]) {
-        case '1': /* no-op */ break;
-        default : fprintf(f, "%" PRIu32 "\n", img->max); break;
+    if (f == NULL) {
+        perror("write_image(fopen)");
+        return false;
     }
 
-    for(size_t i = 0; i < img->height; i++) {
-        // with ppm, each pixel has 3 values
-        size_t w = img->magic[1] == '3' ? img->width*3 : img->width;
+    // ヘッダ書き出し
+    fprintf(f, "%s\n%zu %zu\n%hu\n", img->magic, img->width, img->height, img->max);
 
-        for(size_t j = 0; j < w; j++) {
-            fprintf(f, "%" PRIu32 " ", img->val[i][j]);
+    // ピクセル書き出し
+    for(size_t i = 0; i < img->height; i++) {
+        for(size_t j = 0; j < img->width; j++) {
+            fprintf(f, "%hu ", img->image[i][j]);
         }
         fprintf(f, "\n");
     }
+
+    fclose(f);
+
+    return true;
 }
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        fprintf(stderr, "%s [input] [output]", argv[0]);
+        fprintf(stderr, "%s [input] [output]\n", argv[0]);
         return 0;
     }
 
-    Image* img = read_image(argv[1]);
-    write_image(argv[2], img);
+    PNM img;
+
+    if (!read_image(argv[1], &img)) {
+        fprintf(stderr, "main: error in reading image\n");
+        return 1;
+    }
+
+    if (!write_image(argv[2], &img)) {
+        fprintf(stderr, "main: error in writing image\n");
+        return 1;
+    }
 }
