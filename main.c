@@ -18,6 +18,11 @@ typedef struct {
     uint image[HEIGHT_MAX][WIDTH_MAX];
 } PNM;
 
+typedef struct {
+    uint min;
+    uint max;
+} MinMax;
+
 // ファイルからPGMイメージを読み出す
 bool read_image(const char* filename, PNM* img) {
     FILE* f = fopen(filename, "r");
@@ -70,6 +75,39 @@ bool write_image(const char* filename, const PNM* img) {
     return true;
 }
 
+// 画素値の最小・最大を探す
+MinMax find_min_max(const PNM* img) {
+    MinMax mm;
+    mm.min = img->max;
+    mm.max = 0;
+
+    for(size_t i = 0; i < img->height; i++) {
+        for(size_t j = 0; j < img->width; j++) {
+            const uint val = img->image[i][j];
+            if (val < mm.min) mm.min = val;
+            if (val > mm.max) mm.max = val;
+        }
+    }
+
+    return mm;
+}
+
+// コントラストを補正する
+void adjust_contrast(MinMax mm, PNM* img) {
+    const uint diff = mm.max - mm.min;
+    if (diff == 0 || (mm.max == img->max && mm.min == 0)) {
+        fprintf(stderr, "adjust_contrast: no operation performed\n");
+        return;
+    }
+    const uint min = mm.min;
+    for(size_t i = 0; i < img->height; i++) {
+        for(size_t j = 0; j < img->width; j++) {
+            uint* val = &(img->image[i][j]);
+            *val = (img->max * (*val - min)) / diff;
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc != 3) {
         fprintf(stderr, "%s [input] [output]\n", argv[0]);
@@ -82,6 +120,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "main: error in reading image\n");
         return 1;
     }
+
+    MinMax mm = find_min_max(&img);
+
+    adjust_contrast(mm, &img);
 
     if (!write_image(argv[2], &img)) {
         fprintf(stderr, "main: error in writing image\n");
