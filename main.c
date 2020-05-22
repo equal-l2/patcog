@@ -155,12 +155,14 @@ void pixelize(PNM* img, size_t block_size) {
         for(size_t j = 0; j < img->width; j += block_size) {
             // ブロック内の画素値の平均を求める
             unsigned long long avg = 0;
+            size_t cnt = 0;
             for(size_t k = 0; k < block_size && i+k < img->height; k++) {
                 for(size_t l = 0; l < block_size && j+l < img->width; l++) {
                     avg += img->image[i+k][j+l];
+                    cnt++;
                 }
             }
-            avg /= block_size*block_size;
+            avg /= cnt;
 
             // 求めた平均値でブロック全体を上書きする
             for(size_t k = 0; k < block_size && i+k < img->height; k++) {
