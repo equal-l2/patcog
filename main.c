@@ -1,10 +1,11 @@
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#define WIDTH_MAX 1024
-#define HEIGHT_MAX 1024
+#define WIDTH_MAX 4096
+#define HEIGHT_MAX 4096
 
 #undef uint
 // PGMでは各要素の値は16ビットで十分
@@ -37,6 +38,16 @@ bool read_image(const char* filename, PNM* img) {
 
     if (ret != 4) {
         fprintf(stderr, "read_image: cannot read the header\n");
+        goto ERR;
+    }
+
+    if (img->width > WIDTH_MAX || img->height > HEIGHT_MAX) {
+        fprintf(stderr, "read_image: image is too big\n");
+        goto ERR;
+    }
+
+    if (img->magic[1] != '2') {
+        fprintf(stderr, "read_image: image is not PGM(ASCII)\n");
         goto ERR;
     }
 
@@ -89,7 +100,7 @@ bool write_image(const char* filename, const PNM* img) {
 }
 
 // 挿入ソート
-// 参考；https://yaneurao.hatenadiary.com/entries/2009/11/26
+// 参考: https://yaneurao.hatenadiary.com/entries/2009/11/26
 void insertion_sort(uint *a, const size_t size){
     for (size_t i = 1; i < size; ++i) {
         uint buf = a[i];
@@ -105,32 +116,35 @@ void insertion_sort(uint *a, const size_t size){
 
 // メジアンフィルタ
 void smooth_with_median(PNM* img) {
-    uint new_img[HEIGHT_MAX][WIDTH_MAX];
-    uint a[9];
+    // 画素配列は大きいのでヒープに置く
+    // 二次元配列の確保は危険で面倒なのでPNM構造体で代用
+    PNM* new_img = malloc(sizeof(PNM));
 
     // メジアンフィルタをかけて結果を新しい配列に入れる
     for(size_t i = 1; i < img->height - 1; i++) {
         for(size_t j = 1; j < img->width - 1; j++) {
-            a[0] = img->image[i-1][j-1];
-            a[1] = img->image[i-1][j];
-            a[2] = img->image[i-1][j+1];
-            a[3] = img->image[i][j-1];
-            a[4] = img->image[i][j];
-            a[5] = img->image[i][j+1];
-            a[6] = img->image[i+1][j-1];
-            a[7] = img->image[i+1][j];
-            a[8] = img->image[i+1][j+1];
+            uint a[] = {
+                img->image[i-1][j-1],
+                img->image[i-1][j],
+                img->image[i-1][j+1],
+                img->image[i][j-1],
+                img->image[i][j],
+                img->image[i][j+1],
+                img->image[i+1][j-1],
+                img->image[i+1][j],
+                img->image[i+1][j+1]
+            };
 
-            insertion_sort(a, 9);
+            insertion_sort(a, sizeof(a)/sizeof(a[0]));
 
-            new_img[i][j] = a[4];
+            new_img->image[i][j] = a[4];
         }
     }
 
     // 結果を元の構造体に書き戻す
     for(size_t i = 1; i < img->height - 1; i++) {
         for(size_t j = 1; j < img->width - 1; j++) {
-            img->image[i][j] = new_img[i][j];
+            img->image[i][j] = new_img->image[i][j];
         }
     }
 }
@@ -181,16 +195,18 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    PNM img;
 
-    if (!read_image(argv[1], &img)) {
+    // 画素配列は大きいのでヒープに置く
+    PNM* img = malloc(sizeof(PNM));
+
+    if (!read_image(argv[1], img)) {
         fprintf(stderr, "main: error in reading image\n");
         return 1;
     }
 
-    smooth_with_median(&img);
+    smooth_with_median(img);
 
-    if (!write_image(argv[2], &img)) {
+    if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
         return 1;
     }
