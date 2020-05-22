@@ -88,6 +88,53 @@ bool write_image(const char* filename, const PNM* img) {
     return true;
 }
 
+// 挿入ソート
+// 参考；https://yaneurao.hatenadiary.com/entries/2009/11/26
+void insertion_sort(uint *a, const size_t size){
+    for (size_t i = 1; i < size; ++i) {
+        uint buf = a[i];
+        if (a[i-1] > buf) {
+            size_t j = i;
+            do {
+                a[j] = a[j-1];
+            } while (--j > 0 && a[j-1] > buf);
+            a[j] = buf;
+        }
+    }
+}
+
+// メジアンフィルタ
+void smooth_with_median(PNM* img) {
+    uint new_img[HEIGHT_MAX][WIDTH_MAX];
+    uint a[9];
+
+    // メジアンフィルタをかけて結果を新しい配列に入れる
+    for(size_t i = 1; i < img->height - 1; i++) {
+        for(size_t j = 1; j < img->width - 1; j++) {
+            a[0] = img->image[i-1][j-1];
+            a[1] = img->image[i-1][j];
+            a[2] = img->image[i-1][j+1];
+            a[3] = img->image[i][j-1];
+            a[4] = img->image[i][j];
+            a[5] = img->image[i][j+1];
+            a[6] = img->image[i+1][j-1];
+            a[7] = img->image[i+1][j];
+            a[8] = img->image[i+1][j+1];
+
+            insertion_sort(a, 9);
+
+            new_img[i][j] = a[4];
+        }
+    }
+
+    // 結果を元の構造体に書き戻す
+    for(size_t i = 1; i < img->height - 1; i++) {
+        for(size_t j = 1; j < img->width - 1; j++) {
+            img->image[i][j] = new_img[i][j];
+        }
+    }
+}
+
 // 画素値の最小・最大を探す
 MinMax find_min_max(const PNM* img) {
     MinMax mm;
@@ -141,9 +188,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    MinMax mm = find_min_max(&img);
-
-    adjust_contrast(mm, &img);
+    smooth_with_median(&img);
 
     if (!write_image(argv[2], &img)) {
         fprintf(stderr, "main: error in writing image\n");
