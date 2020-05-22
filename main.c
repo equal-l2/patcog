@@ -149,6 +149,29 @@ void smooth_with_median(PNM* img) {
     }
 }
 
+// モザイク処理
+void pixelize(PNM* img, size_t block_size) {
+    for(size_t i = 0; i < img->height; i += block_size) {
+        for(size_t j = 0; j < img->width; j += block_size) {
+            // ブロック内の画素値の平均を求める
+            unsigned long long avg = 0;
+            for(size_t k = 0; k < block_size && i+k < img->height; k++) {
+                for(size_t l = 0; l < block_size && j+l < img->width; l++) {
+                    avg += img->image[i+k][j+l];
+                }
+            }
+            avg /= block_size*block_size;
+
+            // 求めた平均値でブロック全体を上書きする
+            for(size_t k = 0; k < block_size && i+k < img->height; k++) {
+                for(size_t l = 0; l < block_size && j+l < img->width; l++) {
+                    img->image[i+k][j+l] = (uint)avg;
+                }
+            }
+        }
+    }
+}
+
 // 画素値の最小・最大を探す
 MinMax find_min_max(const PNM* img) {
     MinMax mm;
@@ -190,11 +213,16 @@ void adjust_contrast(MinMax mm, PNM* img) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        fprintf(stderr, "%s [input] [output]\n", argv[0]);
+    if (argc != 4) {
+        fprintf(stderr, "%s [input] [output] [block size]\n", argv[0]);
         return 0;
     }
 
+    const unsigned long block_size = strtoul(argv[3], NULL, 10);
+    if (block_size == ULONG_MAX) {
+        perror("strtoul");
+        return 1;
+    }
 
     // 画素配列は大きいのでヒープに置く
     PNM* img = malloc(sizeof(PNM));
@@ -204,7 +232,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    smooth_with_median(img);
+    pixelize(img, block_size);
 
     if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
