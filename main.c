@@ -1,7 +1,8 @@
-#include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define WIDTH_MAX 4096
 #define HEIGHT_MAX 4096
@@ -213,15 +214,72 @@ void adjust_contrast(MinMax mm, PNM* img) {
     }
 }
 
+bool scale(PNM* img, double height_factor, double width_factor) {
+    double new_height = round(height_factor * img->height);
+    double new_width = round(width_factor * img->width);
+
+    fprintf(stderr, "scale: %zdx%zd -> %.0fx%.0f\n", img->height, img->width, new_height, new_width);
+
+    if (new_height > (double)HEIGHT_MAX || new_width > (double)WIDTH_MAX) {
+        fprintf(stderr, "read_image: cannot scale, resulting image will be too big\n");
+        return false;
+    }
+    if (new_height == 0 || new_width == 0) {
+        fprintf(stderr, "read_image: cannot scale, resulting image will be zero-sized\n");
+        return false;
+    }
+
+    PNM* new_img = malloc(sizeof(PNM));
+    strcpy(new_img->magic, img->magic);
+    new_img->height = (size_t)new_height;
+    new_img->width = (size_t)new_width;
+    new_img->max = img->max;
+
+    for(size_t i = 0; i < new_img->height; i++) {
+        for(size_t j = 0; j < new_img->width; j++) {
+            size_t i_old = (size_t)(i/height_factor);
+            size_t j_old = (size_t)(j/width_factor);
+            new_img->image[i][j] = img->image[i_old][j_old];
+        }
+    }
+
+    *img = *new_img;
+
+    return true;
+}
+
+bool get_positive_double(char* str, double* ret) {
+    char* c = NULL;
+    double d = strtod(str, &c);
+    if (str == c) {
+        fprintf(stderr, "get_double: input is not a valid double\n");
+        return false;
+    }
+    if (d < 0) {
+        fprintf(stderr, "get_double: input is negative\n");
+        return false;
+    }
+    if (d == HUGE_VAL) {
+        fprintf(stderr, "get_double: input is out of range\n");
+        return false;
+    }
+    *ret = d;
+    return true;
+}
+
 int main(int argc, char** argv) {
-    if (argc != 4) {
-        fprintf(stderr, "%s [input] [output] [block size]\n", argv[0]);
+    if (argc != 5) {
+        fprintf(stderr, "%s [input] [output] [height factor] [width factor]\n", argv[0]);
         return 0;
     }
 
-    const unsigned long block_size = strtoul(argv[3], NULL, 10);
-    if (block_size == ULONG_MAX) {
-        perror("strtoul");
+    double height_factor, width_factor;
+    if (!get_positive_double(argv[3], &height_factor)) {
+        fprintf(stderr, "main: error in parsing the height factor\n");
+        return 1;
+    }
+    if (!get_positive_double(argv[4], &width_factor)) {
+        fprintf(stderr, "main: error in parsing the width factor\n");
         return 1;
     }
 
@@ -233,7 +291,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    pixelize(img, block_size);
+    bool res = scale(img, height_factor, width_factor);
+
+    if (!res) {
+        fprintf(stderr, "main: error in processing\n");
+        return 1;
+    }
 
     if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
