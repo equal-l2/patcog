@@ -147,6 +147,8 @@ void smooth_with_median(PNM* img) {
             img->image[i][j] = new_img->image[i][j];
         }
     }
+
+    free(new_img);
 }
 
 // モザイク処理
@@ -214,12 +216,16 @@ void adjust_contrast(MinMax mm, PNM* img) {
     }
 }
 
+// スケール処理
 bool scale(PNM* img, double height_factor, double width_factor) {
+    // スケール後の画像の大きさは、係数を乗じて四捨五入する
     double new_height = round(height_factor * img->height);
     double new_width = round(width_factor * img->width);
 
+    // スケール前後の画像の大きさを出力
     fprintf(stderr, "scale: %zdx%zd -> %.0fx%.0f\n", img->height, img->width, new_height, new_width);
 
+    // スケール後に大きすぎたり0になったりする場合は中止
     if (new_height > (double)HEIGHT_MAX || new_width > (double)WIDTH_MAX) {
         fprintf(stderr, "read_image: cannot scale, resulting image will be too big\n");
         return false;
@@ -237,20 +243,41 @@ bool scale(PNM* img, double height_factor, double width_factor) {
 
     for(size_t i = 0; i < new_img->height; i++) {
         for(size_t j = 0; j < new_img->width; j++) {
-            size_t i_old = (size_t)(i/height_factor);
-            size_t j_old = (size_t)(j/width_factor);
-            new_img->image[i][j] = img->image[i_old][j_old];
+            double tmp;
+
+            // 補間原点：スケール後画像の対象画素を、スケール前画像空間に戻した際の実数座標の整数部
+
+            const double h_dist = modf(i/height_factor, &tmp); // 補間原点からの高さ方向の距離
+            const size_t h_base = (size_t)tmp; // 補間原点の高さ方向座標
+
+            const double w_dist = modf(j/width_factor, &tmp); // 補間原点からの幅方向の距離
+            const size_t w_base = (size_t)tmp; // 補間原点の幅方向座標
+
+            if (h_base == img->height-1 || w_base == img->width-1) {
+                // 補間原点が画像の端であるとき
+                // 補間できないので補間原点の画素値でとりあえず埋めておく
+                new_img->image[i][j] = img->image[h_base][w_base];
+            } else {
+                new_img->image[i][j] = (uint)(
+                        img->image[h_base][w_base]*(1-h_dist)*(1-w_dist) +
+                        img->image[h_base+1][w_base]*h_dist*(1-w_dist) +
+                        img->image[h_base][w_base+1]*(1-h_dist)*w_dist +
+                        img->image[h_base+1][w_base+1]*h_dist*w_dist
+                );
+            }
         }
     }
 
     *img = *new_img;
 
+    free(new_img);
+
     return true;
 }
 
-bool get_positive_double(char* str, double* ret) {
+bool get_positive_double(const char* str, double* ret) {
     char* c = NULL;
-    double d = strtod(str, &c);
+    const double d = strtod(str, &c);
     if (str == c) {
         fprintf(stderr, "get_double: input is not a valid double\n");
         return false;
@@ -302,4 +329,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "main: error in writing image\n");
         return 1;
     }
+
+    free(img);
 }
