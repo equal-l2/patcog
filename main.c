@@ -51,7 +51,7 @@ bool read_image(const char* filename, PNM* img) {
         goto ERR;
     }
 
-    // ピクセル読み出し
+    // 画素読み出し
     for(size_t i = 0; i < img->height; i++) {
         for(size_t j = 0; j < img->width; j++) {
             uint tmp;
@@ -86,7 +86,7 @@ bool write_image(const char* filename, const PNM* img) {
     // ヘッダ書き出し
     fprintf(f, "%s\n%zu %zu\n%hu\n", img->magic, img->width, img->height, img->max);
 
-    // ピクセル書き出し
+    // 画素書き出し
     for(size_t i = 0; i < img->height; i++) {
         for(size_t j = 0; j < img->width; j++) {
             fprintf(f, "%hu ", img->image[i][j]);
@@ -275,6 +275,7 @@ bool scale(PNM* img, double height_factor, double width_factor) {
     return true;
 }
 
+// 文字列からdouble型の数を取り出す
 bool get_positive_double(const char* str, double* ret) {
     char* c = NULL;
     const double d = strtod(str, &c);
