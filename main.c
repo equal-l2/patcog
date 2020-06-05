@@ -351,6 +351,81 @@ bool rotate(PNM* img, double theta, double x0, double y0) {
     return true;
 }
 
+/*
+ Affine transformation: (x0, y0) -> (X, Y)
+ / \   /   \ /  \   / \
+ |X| = |a b| |x0| + |c|
+ |Y|   |d e| |y0|   |f|
+ \ /   \   / \  /   \ /
+ */
+typedef struct {
+    double a;
+    double b;
+    double c;
+    double d;
+    double e;
+    double f;
+} AffineArgs;
+
+// アフィン変換
+bool affine_trans(PNM* img, AffineArgs args) {
+    // 変換行列の行列式
+    const double det = args.a*args.e-args.b*args.d;
+
+    if (det == 0) {
+        fprintf(stderr, "affine_trans: determinant is zero\n");
+        return false;
+    }
+
+    PNM* new_img = malloc(sizeof(PNM));
+    strcpy(new_img->magic, img->magic);
+    new_img->height = img->height;
+    new_img->width = img->width;
+    new_img->max = img->max;
+
+    for(size_t i = 0; i < new_img->height; i++) {
+        for(size_t j = 0; j < new_img->width; j++) {
+            // 逆変換で元の座標を算出する
+            const double x_orig = (args.e*(j-args.c)-args.b*(i-args.f))/det;
+            const double y_orig = (-args.d*(j-args.c)+args.a*(i-args.f))/det;
+
+            if (
+                0 <= x_orig && x_orig <= (new_img->width - 1) &&
+                0 <= y_orig && y_orig <= (new_img->height - 1)
+            ) {
+                /* 補間処理 */
+                double tmp;
+                const double h_dist = modf(y_orig, &tmp); // 補間原点からの高さ方向の距離
+                const size_t h_base = (size_t)tmp; // 補間原点の高さ方向座標
+
+                const double w_dist = modf(x_orig, &tmp); // 補間原点からの幅方向の距離
+                const size_t w_base = (size_t)tmp; // 補間原点の幅方向座標
+
+                if (h_base == img->height-1 || w_base == img->width-1) {
+                    // 補間原点が画像の端であるとき
+                    // 補間できないので0を入れておく
+                    new_img->image[i][j] = 0;
+                } else {
+                    new_img->image[i][j] = (uint)(
+                        img->image[h_base][w_base]*(1-h_dist)*(1-w_dist) +
+                        img->image[h_base+1][w_base]*h_dist*(1-w_dist) +
+                        img->image[h_base][w_base+1]*(1-h_dist)*w_dist +
+                        img->image[h_base+1][w_base+1]*h_dist*w_dist
+                    );
+                }
+            } else {
+                // 元の点は存在しないので0を入れておく
+                new_img->image[i][j] = 0;
+            }
+        }
+    }
+
+    *img = *new_img;
+    free(new_img);
+
+    return true;
+}
+
 int main(int argc, char** argv) {
 
 #define GET_DOUBLE_ARG(n, to, arg_desc)\
@@ -359,17 +434,21 @@ int main(int argc, char** argv) {
         return 1;\
     }
 
-    const int nargs = 6;
+    const int nargs = 9;
     if (argc != nargs) {
         fprintf(stderr, "expected %d arguments, got %d\n", nargs, argc);
-        fprintf(stderr, "%s [input] [output] [deg] [x0] [y0]\n", argv[0]);
+        fprintf(stderr, "%s [input] [output] [affine args(a~f)]\n", argv[0]);
         return 0;
     }
 
-    double deg, x0, y0;
-    GET_DOUBLE_ARG(3, &deg, "deg");
-    GET_DOUBLE_ARG(4, &x0, "x0");
-    GET_DOUBLE_ARG(5, &y0, "y0");
+    AffineArgs args;
+
+    GET_DOUBLE_ARG(3, &args.a, "affine arg a");
+    GET_DOUBLE_ARG(4, &args.b, "affine arg b");
+    GET_DOUBLE_ARG(5, &args.c, "affine arg c");
+    GET_DOUBLE_ARG(6, &args.d, "affine arg d");
+    GET_DOUBLE_ARG(7, &args.e, "affine arg e");
+    GET_DOUBLE_ARG(8, &args.f, "affine arg f");
 
     // 画素配列は大きいのでヒープに置く
     PNM* img = malloc(sizeof(PNM));
@@ -379,7 +458,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const bool res = rotate(img, deg_to_rad(deg), x0, y0);
+    const bool res = affine_trans(img, args);
 
     if (!res) {
         fprintf(stderr, "main: error in processing\n");
