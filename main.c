@@ -19,12 +19,6 @@ typedef struct {
     uint image[HEIGHT_MAX][WIDTH_MAX];
 } PNM;
 
-// 最小値・最大値をまとめたもの
-typedef struct {
-    uint min;
-    uint max;
-} MinMax;
-
 // ファイルからPGMイメージを読み出す
 bool read_image(const char* filename, PNM* img) {
     FILE* f = fopen(filename, "r");
@@ -176,6 +170,12 @@ void pixelize(PNM* img, size_t block_size) {
     }
 }
 
+// 最小値・最大値をまとめたもの
+typedef struct {
+    uint min;
+    uint max;
+} MinMax;
+
 // 画素値の最小・最大を探す
 MinMax find_min_max(const PNM* img) {
     MinMax mm;
@@ -219,8 +219,8 @@ void adjust_contrast(MinMax mm, PNM* img) {
 // スケール処理
 bool scale(PNM* img, double height_factor, double width_factor) {
     // スケール後の画像の大きさは、係数を乗じて四捨五入する
-    double new_height = round(height_factor * img->height);
-    double new_width = round(width_factor * img->width);
+    const double new_height = round(height_factor * img->height);
+    const double new_width = round(width_factor * img->width);
 
     // スケール前後の画像の大きさを出力
     fprintf(stderr, "scale: %zdx%zd -> %.0fx%.0f\n", img->height, img->width, new_height, new_width);
