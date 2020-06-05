@@ -275,19 +275,15 @@ bool scale(PNM* img, double height_factor, double width_factor) {
     return true;
 }
 
-// 文字列からdouble型の数を取り出す
-bool get_positive_double(const char* str, double* ret) {
+// 文字列から double 型の数を取り出す
+bool get_double(const char* str, double* ret) {
     char* c = NULL;
     const double d = strtod(str, &c);
     if (str == c) {
         fprintf(stderr, "get_double: input is not a valid double\n");
         return false;
     }
-    if (d < 0) {
-        fprintf(stderr, "get_double: input is negative\n");
-        return false;
-    }
-    if (d == HUGE_VAL) {
+    if (d == HUGE_VAL || d == -HUGE_VAL) {
         fprintf(stderr, "get_double: input is out of range\n");
         return false;
     }
@@ -295,21 +291,85 @@ bool get_positive_double(const char* str, double* ret) {
     return true;
 }
 
+static inline double deg_to_rad(double deg) {
+    // pi/180;
+    const static double factor = 0.01745329251994329576923690768488612713442;
+    return deg * factor;
+}
+
+// (x0, y0) を中心に角度 theta だけ回転
+// theta は radian
+bool rotate(PNM* img, double theta, double x0, double y0) {
+    PNM* new_img = malloc(sizeof(PNM));
+    strcpy(new_img->magic, img->magic);
+    new_img->height = img->height;
+    new_img->width = img->width;
+    new_img->max = img->max;
+
+    const double sint = sin(theta);
+    const double cost = cos(theta);
+    for(size_t i = 0; i < new_img->height; i++) {
+        for(size_t j = 0; j < new_img->width; j++) {
+            // 逆変換で元の座標を算出する
+            const double x_orig = cost*(j-x0)+sint*(i-y0)+x0;
+            const double y_orig = -sint*(j-x0)+cost*(i-y0)+y0;
+
+            if (
+                0 <= x_orig && x_orig <= (new_img->width - 1) &&
+                0 <= y_orig && y_orig <= (new_img->height - 1)
+            ) {
+                /* 補間処理 */
+                double tmp;
+                const double h_dist = modf(y_orig, &tmp); // 補間原点からの高さ方向の距離
+                const size_t h_base = (size_t)tmp; // 補間原点の高さ方向座標
+
+                const double w_dist = modf(x_orig, &tmp); // 補間原点からの幅方向の距離
+                const size_t w_base = (size_t)tmp; // 補間原点の幅方向座標
+
+                if (h_base == img->height-1 || w_base == img->width-1) {
+                    // 補間原点が画像の端であるとき
+                    // 補間できないので0を入れておく
+                    new_img->image[i][j] = 0;
+                } else {
+                    new_img->image[i][j] = (uint)(
+                        img->image[h_base][w_base]*(1-h_dist)*(1-w_dist) +
+                        img->image[h_base+1][w_base]*h_dist*(1-w_dist) +
+                        img->image[h_base][w_base+1]*(1-h_dist)*w_dist +
+                        img->image[h_base+1][w_base+1]*h_dist*w_dist
+                    );
+                }
+            } else {
+                // 元の点は存在しないので0を入れておく
+                new_img->image[i][j] = 0;
+            }
+        }
+    }
+
+    *img = *new_img;
+    free(new_img);
+
+    return true;
+}
+
 int main(int argc, char** argv) {
-    if (argc != 5) {
-        fprintf(stderr, "%s [input] [output] [height factor] [width factor]\n", argv[0]);
+
+#define GET_DOUBLE_ARG(n, to, arg_desc)\
+    if (!get_double(argv[n], to)) {\
+        fprintf(stderr, "main: error in parsing "arg_desc"\n");\
+        return 1;\
+    }
+
+    const int nargs = 6;
+    if (argc != nargs) {
+        fprintf(stderr, "expected %d arguments, got %d\n", nargs, argc);
+        fprintf(stderr, "%s [input] [output] [deg] [x0] [y0]\n", argv[0]);
         return 0;
     }
 
-    double height_factor, width_factor;
-    if (!get_positive_double(argv[3], &height_factor)) {
-        fprintf(stderr, "main: error in parsing the height factor\n");
-        return 1;
-    }
-    if (!get_positive_double(argv[4], &width_factor)) {
-        fprintf(stderr, "main: error in parsing the width factor\n");
-        return 1;
-    }
+    double deg, x0, y0;
+    GET_DOUBLE_ARG(3, &deg, "deg");
+    GET_DOUBLE_ARG(4, &x0, "x0");
+    GET_DOUBLE_ARG(5, &y0, "y0");
 
     // 画素配列は大きいのでヒープに置く
     PNM* img = malloc(sizeof(PNM));
@@ -319,7 +379,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    bool res = scale(img, height_factor, width_factor);
+    const bool res = rotate(img, deg_to_rad(deg), x0, y0);
 
     if (!res) {
         fprintf(stderr, "main: error in processing\n");
