@@ -93,6 +93,22 @@ bool write_image(const char* filename, const PNM* img) {
     return true;
 }
 
+// 文字列から double 型の数を取り出す
+bool get_double(const char* str, double* ret) {
+    char* c = NULL;
+    const double d = strtod(str, &c);
+    if (str == c) {
+        fprintf(stderr, "get_double: input is not a valid double\n");
+        return false;
+    }
+    if (d == HUGE_VAL || d == -HUGE_VAL) {
+        fprintf(stderr, "get_double: input is out of range\n");
+        return false;
+    }
+    *ret = d;
+    return true;
+}
+
 // 挿入ソート
 // 参考: https://yaneurao.hatenadiary.com/entries/2009/11/26
 void insertion_sort(uint *a, const size_t size){
@@ -275,22 +291,6 @@ bool scale(PNM* img, double height_factor, double width_factor) {
     return true;
 }
 
-// 文字列から double 型の数を取り出す
-bool get_double(const char* str, double* ret) {
-    char* c = NULL;
-    const double d = strtod(str, &c);
-    if (str == c) {
-        fprintf(stderr, "get_double: input is not a valid double\n");
-        return false;
-    }
-    if (d == HUGE_VAL || d == -HUGE_VAL) {
-        fprintf(stderr, "get_double: input is out of range\n");
-        return false;
-    }
-    *ret = d;
-    return true;
-}
-
 static inline double deg_to_rad(double deg) {
     // pi/180;
     const static double factor = 0.01745329251994329576923690768488612713442;
@@ -426,29 +426,107 @@ bool affine_trans(PNM* img, AffineArgs args) {
     return true;
 }
 
+// 二値化
+void binarize(PNM* img, uint th) {
+    for (size_t i = 0; i < img->height; i++) {
+        for (size_t j = 0; j < img->width; j++) {
+            uint* px = &img->image[i][j];
+            *px = *px > th ? img->max : 0;
+        }
+    }
+}
+
+// 二値化閾値の探索
+uint find_threshold(const PNM* img) {
+    const size_t total_px = img->width * img->height;
+    const uint max = img->max;
+
+    double* omega = malloc(sizeof(double) * (max + 1));
+    double* mu = malloc(sizeof(double) * (max + 1));
+
+    {
+        // 全ての画素値について、その値を持つ画素の数を求める
+        size_t* ni = calloc(max+1,sizeof(size_t));
+        for(size_t i = 0; i < img->height; i++) {
+            for(size_t j = 0; j < img->width; j++) {
+                ni[img->image[i][j]]++;
+            }
+        }
+
+        // omega と mu を漸化式を利用して求める
+        // 浮動小数点数の加算を行うので整数演算を用いたナイーブな方法に比べて
+        // 誤差が生じる可能性がある
+        // max = 255 では誤差は小数点以下第15桁目かそれ以下に留まり
+        // 実用上問題ない
+        omega[0] = (double)ni[0]/total_px;
+        mu[0] = 0;
+        for(uint i = 1; i <= max; i++) {
+            omega[i] = omega[i-1] + (double)ni[i]/total_px;
+            mu[i] = mu[i-1] + (double)(i*ni[i])/total_px;
+        }
+
+        // 漸化式を使わない場合
+        /*
+        for(uint i = 0; i <= max; i++) {
+            unsigned long long omega_tmp = 0;
+            unsigned long long mu_tmp = 0;
+            for (uint j = 0; j <= i; j++) {
+                omega_tmp += ni[j];
+                mu_tmp += j*ni[j];
+            }
+            omega[i] = (double)omega_tmp/total_px;
+            mu[i] = (double)mu_tmp/total_px;
+        }
+        */
+
+        free(ni);
+    }
+
+    // 最大の分散をとる画素値を見つける
+    double max_var = 0;
+    uint max_var_val = max;
+    for(uint i = 0; i <= max; i++) {
+        // 閾値より小さいクラスの要素がないときスキップする
+        // (この閾値では正しく区分できていないし、ゼロ除算が起こるため)
+        if (omega[i] == 0) continue;
+
+        // 閾値より大きいクラスの要素がないとき処理を終了する
+        // (閾値をこれ以上大きくしても変化はないし、ゼロ除算が起こるため)
+        if (omega[i] == 1) break;
+
+        // クラス間分散
+        const double var =
+            (mu[max]*omega[i]-mu[i])*(mu[max]*omega[i]-mu[i])
+            / (omega[i]*(1-omega[i]));
+
+        if (var > max_var) {
+            max_var = var;
+            max_var_val = i;
+        }
+    }
+
+    free(omega);
+    free(mu);
+
+    return max_var_val;
+}
+
 int main(int argc, char** argv) {
 
+    /*
 #define GET_DOUBLE_ARG(n, to, arg_desc)\
     if (!get_double(argv[n], to)) {\
         fprintf(stderr, "main: error in parsing "arg_desc"\n");\
         return 1;\
     }
+    */
 
-    const int nargs = 9;
+    const int nargs = 3;
     if (argc != nargs) {
         fprintf(stderr, "expected %d arguments, got %d\n", nargs, argc);
-        fprintf(stderr, "%s [input] [output] [affine args(a~f)]\n", argv[0]);
+        fprintf(stderr, "%s [input] [output]\n", argv[0]);
         return 0;
     }
-
-    AffineArgs args;
-
-    GET_DOUBLE_ARG(3, &args.a, "affine arg a");
-    GET_DOUBLE_ARG(4, &args.b, "affine arg b");
-    GET_DOUBLE_ARG(5, &args.c, "affine arg c");
-    GET_DOUBLE_ARG(6, &args.d, "affine arg d");
-    GET_DOUBLE_ARG(7, &args.e, "affine arg e");
-    GET_DOUBLE_ARG(8, &args.f, "affine arg f");
 
     // 画素配列は大きいのでヒープに置く
     PNM* img = malloc(sizeof(PNM));
@@ -458,17 +536,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const bool res = affine_trans(img, args);
+    const uint th = find_threshold(img);
+    printf("Estimated threshold: %u\n", th);
+    binarize(img, (uint)th);
 
+    /*
+    const bool res = affine_trans(img, args);
     if (!res) {
         fprintf(stderr, "main: error in processing\n");
         return 1;
     }
+    */
 
     if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
         return 1;
     }
-
-    free(img);
 }
