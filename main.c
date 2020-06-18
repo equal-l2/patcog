@@ -511,6 +511,36 @@ uint find_threshold(const PNM* img) {
     return max_var_val;
 }
 
+void label_impl(PNM* img, size_t i, size_t j, uint l_val) {
+    img->image[i][j] = l_val;
+
+    if (i >= 1) {
+        if (j >= 1            && img->image[i-1][j-1] == img->max) label_impl(img, i-1, j-1, l_val);
+        if (                     img->image[i-1][j]   == img->max) label_impl(img, i-1, j  , l_val);
+        if (j <= img->width-2 && img->image[i-1][j+1] == img->max) label_impl(img, i-1, j+1, l_val);
+    }
+
+    if (j >= 1            && img->image[i][j-1] == img->max)       label_impl(img, i,   j-1, l_val);
+    if (j <= img->width-2 && img->image[i][j+1] == img->max)       label_impl(img, i,   j+1, l_val);
+
+    if (i <= img->height-2) {
+        if (j >= 1            && img->image[i+1][j-1] == img->max) label_impl(img, i+1, j-1, l_val);
+        if (                     img->image[i+1][j]   == img->max) label_impl(img, i+1, j  , l_val);
+        if (j <= img->width-2 && img->image[i+1][j+1] == img->max) label_impl(img, i+1, j+1, l_val);
+    }
+}
+
+void label(PNM* img) {
+    uint l_val = 1;
+    for (size_t i = 0; i < img->height; i++) {
+        for (size_t j = 0; j < img->width; j++) {
+            if (img->image[i][j] == img->max) {
+                label_impl(img, i, j, l_val+=50);
+            }
+        }
+    }
+}
+
 int main(int argc, char** argv) {
 
     /*
@@ -536,9 +566,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const uint th = find_threshold(img);
-    printf("Estimated threshold: %u\n", th);
-    binarize(img, (uint)th);
+    label(img);
 
     /*
     const bool res = affine_trans(img, args);
