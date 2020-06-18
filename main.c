@@ -6,6 +6,7 @@
 
 #define WIDTH_MAX 4096
 #define HEIGHT_MAX 4096
+#define QUEUE_SIZE 65536
 
 #undef uint
 // PGMでは各要素の値は16ビットで十分
@@ -83,7 +84,7 @@ bool write_image(const char* filename, const PNM* img) {
     // 画素書き出し
     for(size_t i = 0; i < img->height; i++) {
         for(size_t j = 0; j < img->width; j++) {
-            fprintf(f, "%hu ", img->image[i][j]);
+            fprintf(f, "%3hu ", img->image[i][j]);
         }
         fprintf(f, "\n");
     }
@@ -511,23 +512,48 @@ uint find_threshold(const PNM* img) {
     return max_var_val;
 }
 
+typedef struct {
+    size_t i;
+    size_t j;
+} Point;
+
 void label_impl(PNM* img, size_t i, size_t j, uint l_val) {
-    img->image[i][j] = l_val;
+    Point* queue = malloc(QUEUE_SIZE*sizeof(Point));
+    size_t front = 0, rear = 0;
 
-    if (i >= 1) {
-        if (j >= 1            && img->image[i-1][j-1] == img->max) label_impl(img, i-1, j-1, l_val);
-        if (                     img->image[i-1][j]   == img->max) label_impl(img, i-1, j  , l_val);
-        if (j <= img->width-2 && img->image[i-1][j+1] == img->max) label_impl(img, i-1, j+1, l_val);
+#define ENQ(_i, _j) do {\
+    queue[(rear++)%QUEUE_SIZE] = (Point){.i = (_i), .j = (_j)};\
+    img->image[(_i)][(_j)] = l_val;\
+} while (0)
+#define DEQ() queue[(front++)%QUEUE_SIZE]
+
+    ENQ(i, j);
+
+    while (front != rear) {
+        const Point p = DEQ();
+        if (p.i >= 1) {
+            if (p.j >= 1            && img->image[p.i-1][p.j-1] == img->max) ENQ(p.i-1, p.j-1);
+            if (                       img->image[p.i-1][p.j]   == img->max) ENQ(p.i-1, p.j  );
+            if (p.j <= img->width-2 && img->image[p.i-1][p.j+1] == img->max) ENQ(p.i-1, p.j+1);
+        }
+
+        if (p.j >= 1            && img->image[p.i][p.j-1] == img->max)       ENQ(p.i,   p.j-1);
+        if (p.j <= img->width-2 && img->image[p.i][p.j+1] == img->max)       ENQ(p.i,   p.j+1);
+
+        if (p.i <= img->height-2) {
+            if (p.j >= 1            && img->image[p.i+1][p.j-1] == img->max) ENQ(p.i+1, p.j-1);
+            if (                       img->image[p.i+1][p.j]   == img->max) ENQ(p.i+1, p.j  );
+            if (p.j <= img->width-2 && img->image[p.i+1][p.j+1] == img->max) ENQ(p.i+1, p.j+1);
+        }
+
+        if (rear - front > QUEUE_SIZE) {
+            fprintf(stderr, "!!FATAL!! QUEUE OVERFLOW with size %zu\n", rear - front);
+            abort();
+        }
     }
-
-    if (j >= 1            && img->image[i][j-1] == img->max)       label_impl(img, i,   j-1, l_val);
-    if (j <= img->width-2 && img->image[i][j+1] == img->max)       label_impl(img, i,   j+1, l_val);
-
-    if (i <= img->height-2) {
-        if (j >= 1            && img->image[i+1][j-1] == img->max) label_impl(img, i+1, j-1, l_val);
-        if (                     img->image[i+1][j]   == img->max) label_impl(img, i+1, j  , l_val);
-        if (j <= img->width-2 && img->image[i+1][j+1] == img->max) label_impl(img, i+1, j+1, l_val);
-    }
+#undef ENQ
+#undef DEQ
+    free(queue);
 }
 
 void label(PNM* img) {
@@ -535,7 +561,7 @@ void label(PNM* img) {
     for (size_t i = 0; i < img->height; i++) {
         for (size_t j = 0; j < img->width; j++) {
             if (img->image[i][j] == img->max) {
-                label_impl(img, i, j, l_val+=50);
+                label_impl(img, i, j, l_val++);
             }
         }
     }
@@ -545,7 +571,7 @@ int main(int argc, char** argv) {
 
     /*
 #define GET_DOUBLE_ARG(n, to, arg_desc)\
-    if (!get_double(argv[n], to)) {\
+    if (!get_double(argv[(n)], (to))) {\
         fprintf(stderr, "main: error in parsing "arg_desc"\n");\
         return 1;\
     }
@@ -567,14 +593,6 @@ int main(int argc, char** argv) {
     }
 
     label(img);
-
-    /*
-    const bool res = affine_trans(img, args);
-    if (!res) {
-        fprintf(stderr, "main: error in processing\n");
-        return 1;
-    }
-    */
 
     if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
