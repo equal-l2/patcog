@@ -517,11 +517,15 @@ typedef struct {
     size_t j;
 } Point;
 
-void label_impl(PNM* img, size_t i, size_t j, uint l_val) {
+bool label_impl(PNM* img, size_t i, size_t j, uint l_val) {
     Point* queue = malloc(QUEUE_SIZE*sizeof(Point));
     size_t front = 0, rear = 0;
 
 #define ENQ(_i, _j) do {\
+    if (rear - front == QUEUE_SIZE) {\
+        free(queue);\
+        return false;\
+    }\
     queue[(rear++)%QUEUE_SIZE] = (Point){.i = (_i), .j = (_j)};\
     img->image[(_i)][(_j)] = l_val;\
 } while (0)
@@ -546,25 +550,26 @@ void label_impl(PNM* img, size_t i, size_t j, uint l_val) {
             if (p.j <= img->width-2 && img->image[p.i+1][p.j+1] == img->max) ENQ(p.i+1, p.j+1);
         }
 
-        if (rear - front > QUEUE_SIZE) {
-            fprintf(stderr, "!!FATAL!! QUEUE OVERFLOW with size %zu\n", rear - front);
-            abort();
-        }
     }
 #undef ENQ
 #undef DEQ
     free(queue);
+    return true;
 }
 
-void label(PNM* img) {
+bool label(PNM* img) {
     uint l_val = 1;
     for (size_t i = 0; i < img->height; i++) {
         for (size_t j = 0; j < img->width; j++) {
             if (img->image[i][j] == img->max) {
-                label_impl(img, i, j, l_val++);
+                if (!label_impl(img, i, j, l_val++)) {
+                    fprintf(stderr, "label: queue overflowed, consider increasing QUEUE_SIZE");\
+                    return false;
+                }
             }
         }
     }
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -592,7 +597,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    label(img);
+    if (!label(img)) {
+        fprintf(stderr, "main: error in labeling\n");
+        return 1;
+    }
 
     if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
