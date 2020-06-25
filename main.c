@@ -512,58 +512,66 @@ uint find_threshold(const PNM* img) {
     return max_var_val;
 }
 
+// 座標
 typedef struct {
-    size_t i;
-    size_t j;
+    size_t y;
+    size_t x;
 } Point;
 
-bool label_impl(PNM* img, size_t i, size_t j, uint l_val) {
+// 白画素の周囲の画素を再帰的にラベリングする
+bool label_region(PNM* img, size_t y, size_t x, uint l_val) {
     Point* queue = malloc(QUEUE_SIZE*sizeof(Point));
     size_t front = 0, rear = 0;
 
-#define ENQ(_i, _j) do {\
+#define ENQ(_y, _x) do {\
     if (rear - front == QUEUE_SIZE) {\
         free(queue);\
         return false;\
     }\
-    queue[(rear++)%QUEUE_SIZE] = (Point){.i = (_i), .j = (_j)};\
-    img->image[(_i)][(_j)] = l_val;\
+    queue[(rear++)%QUEUE_SIZE] = (Point){.y = (_y), .x = (_x)};\
+    img->image[(_y)][(_x)] = l_val;\
 } while (0)
 #define DEQ() queue[(front++)%QUEUE_SIZE]
 
-    ENQ(i, j);
+    ENQ(y, x);
 
-    while (front != rear) {
+    do {
+        // キューから画素座標を取り出して、その周囲の画素値を調べる
         const Point p = DEQ();
-        if (p.i >= 1) {
-            if (p.j >= 1            && img->image[p.i-1][p.j-1] == img->max) ENQ(p.i-1, p.j-1);
-            if (                       img->image[p.i-1][p.j]   == img->max) ENQ(p.i-1, p.j  );
-            if (p.j <= img->width-2 && img->image[p.i-1][p.j+1] == img->max) ENQ(p.i-1, p.j+1);
+        if (p.y >= 1) {
+            if (p.x >= 1            && img->image[p.y-1][p.x-1] == img->max) ENQ(p.y-1, p.x-1);
+            if (                       img->image[p.y-1][p.x]   == img->max) ENQ(p.y-1, p.x  );
+            if (p.x <= img->width-2 && img->image[p.y-1][p.x+1] == img->max) ENQ(p.y-1, p.x+1);
         }
 
-        if (p.j >= 1            && img->image[p.i][p.j-1] == img->max)       ENQ(p.i,   p.j-1);
-        if (p.j <= img->width-2 && img->image[p.i][p.j+1] == img->max)       ENQ(p.i,   p.j+1);
+        if (p.x >= 1            && img->image[p.y][p.x-1] == img->max)       ENQ(p.y,   p.x-1);
+        if (p.x <= img->width-2 && img->image[p.y][p.x+1] == img->max)       ENQ(p.y,   p.x+1);
 
-        if (p.i <= img->height-2) {
-            if (p.j >= 1            && img->image[p.i+1][p.j-1] == img->max) ENQ(p.i+1, p.j-1);
-            if (                       img->image[p.i+1][p.j]   == img->max) ENQ(p.i+1, p.j  );
-            if (p.j <= img->width-2 && img->image[p.i+1][p.j+1] == img->max) ENQ(p.i+1, p.j+1);
+        if (p.y <= img->height-2) {
+            if (p.x >= 1            && img->image[p.y+1][p.x-1] == img->max) ENQ(p.y+1, p.x-1);
+            if (                       img->image[p.y+1][p.x]   == img->max) ENQ(p.y+1, p.x  );
+            if (p.x <= img->width-2 && img->image[p.y+1][p.x+1] == img->max) ENQ(p.y+1, p.x+1);
         }
-
-    }
+    } while (front != rear);
 #undef ENQ
 #undef DEQ
     free(queue);
     return true;
 }
 
-bool label(PNM* img) {
+// 画像内の連続した白色領域をそれぞれラベリングする
+bool label_all(PNM* img) {
     uint l_val = 1;
     for (size_t i = 0; i < img->height; i++) {
         for (size_t j = 0; j < img->width; j++) {
             if (img->image[i][j] == img->max) {
-                if (!label_impl(img, i, j, l_val++)) {
-                    fprintf(stderr, "label: queue overflowed, consider increasing QUEUE_SIZE");\
+                fprintf(stderr, "New region found, label %u\n", l_val);
+                if (!label_region(img, i, j, l_val++)) {
+                    fprintf(stderr, "label_all: queue overflowed, consider increasing QUEUE_SIZE");\
+                    return false;
+                }
+                if (l_val == img->max) {
+                    fprintf(stderr, "label_all: label reached max");\
                     return false;
                 }
             }
@@ -571,6 +579,7 @@ bool label(PNM* img) {
     }
     return true;
 }
+
 
 int main(int argc, char** argv) {
 
@@ -597,7 +606,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!label(img)) {
+    if (!label_all(img)) {
         fprintf(stderr, "main: error in labeling\n");
         return 1;
     }
