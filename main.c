@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #define WIDTH_MAX 4096
 #define HEIGHT_MAX 4096
 #define QUEUE_SIZE 65536
+#define PI 3.1415926535897932385
 
 #undef uint
 // PGMでは各要素の値は16ビットで十分
@@ -211,7 +213,7 @@ MinMax find_min_max(const PNM* img) {
 }
 
 // コントラストを補正する
-void adjust_contrast(MinMax mm, PNM* img) {
+void adjust_contrast(PNM* img, MinMax mm) {
     const uint diff = mm.max - mm.min;
 
     /*
@@ -512,6 +514,34 @@ uint find_threshold(const PNM* img) {
     return max_var_val;
 }
 
+void expand_region(PNM* img, uint val) {
+    PNM* new_img = malloc(sizeof(PNM));
+    *new_img = *img;
+
+    for (size_t i = 0; i < img->height; i++) {
+        for (size_t j = 0; j < img->width; j++) {
+            if (img->image[i][j] == val) {
+                if (i > 0)           new_img->image[i-1][j] = val;
+                if (i < img->height) new_img->image[i+1][j] = val;
+                if (j > 0)           new_img->image[i][j-1] = val;
+                if (j < img->width)  new_img->image[i][j+1] = val;
+            }
+        }
+    }
+
+    *img = *new_img;
+}
+
+// 収縮
+void erode(PNM* img) {
+    expand_region(img, 0);
+}
+
+// 膨張
+void dilate(PNM* img) {
+    expand_region(img, img->max);
+}
+
 // 座標
 typedef struct {
     size_t y;
@@ -560,26 +590,112 @@ bool label_region(PNM* img, size_t y, size_t x, uint l_val) {
 }
 
 // 画像内の連続した白色領域をそれぞれラベリングする
-bool label_all(PNM* img) {
+// 引数 label_max で付与したラベルの最大値を返す
+bool label_all(PNM* img, uint* label_max) {
     uint l_val = 1;
     for (size_t i = 0; i < img->height; i++) {
         for (size_t j = 0; j < img->width; j++) {
             if (img->image[i][j] == img->max) {
-                fprintf(stderr, "New region found, label %u\n", l_val);
+                //fprintf(stderr, "New region found, label %u\n", l_val);
                 if (!label_region(img, i, j, l_val++)) {
-                    fprintf(stderr, "label_all: queue overflowed, consider increasing QUEUE_SIZE");\
+                    fprintf(stderr, "label_all: queue overflowed, consider increasing QUEUE_SIZE\n");\
+                    *label_max = l_val - 2; // 今回のラベル値で失敗しているので一つ前の値を返す
                     return false;
                 }
                 if (l_val == img->max) {
-                    fprintf(stderr, "label_all: label reached max");\
+                    fprintf(stderr, "label_all: label reached max\n");\
+                    *label_max = l_val - 1; // 今回のラベル値は成功しているのでその値を返す
                     return false;
                 }
             }
         }
     }
+
+    *label_max = l_val - 1;
     return true;
 }
 
+typedef struct {
+    size_t area;
+    size_t xcenter;
+    size_t ycenter;
+    double m20;
+    double m02;
+    double m11;
+    uint deg;
+} Props;
+
+// 各領域の性質を調べる
+Props* get_region_props(const PNM* img, uint label_max) {
+    Props* ret = calloc(label_max + 1, sizeof(Props));
+
+    for (size_t i = 0; i < img->height; i++) {
+        for (size_t j = 0; j < img->width; j++) {
+            const uint pval = img->image[i][j];
+            if (pval != 0 && pval <= label_max) {
+                ret[pval].area++;
+                ret[pval].xcenter += j;
+                ret[pval].ycenter += i;
+                ret[pval].m20 += j * j;
+                ret[pval].m02 += i * i;
+                ret[pval].m11 += (double)i * j;
+            }
+        }
+    }
+
+    for (size_t i = 1; i <= label_max; i++) {
+        const size_t area = ret[i].area;
+
+        ret[i].xcenter /= area;
+        ret[i].ycenter /= area;
+
+        // 各モーメントを重心系に変換
+        const double m20_cor = ret[i].m20 - area*ret[i].xcenter*ret[i].xcenter;
+        const double m11_cor = ret[i].m11 - area*ret[i].xcenter*ret[i].ycenter;
+        const double m02_cor = ret[i].m02 - area*ret[i].ycenter*ret[i].ycenter;
+        const double rad = 0.5 * atan2(2.0*m11_cor, m20_cor-m02_cor);
+        ret[i].deg = (uint)(fabs(rad * 180 / PI)); // ラジアンを度に変換
+    }
+
+    return ret;
+}
+
+void print_props(const Props* ps, uint label_max) {
+    printf("label num   area   xcenter   ycenter\n");
+    for (uint i = 1; i <= label_max; i++) {
+        printf("%-9hu   %-5zu  %-8zu  %-8zu\n", i, ps[i].area, ps[i].xcenter, ps[i].ycenter);
+    }
+}
+
+// 顔領域の抽出
+void extract_face(PNM* orig, const PNM* mask, Props* ps, uint label_max) {
+    const size_t total_area = orig->width * orig->height;
+    double max_score = 0;
+    size_t max_index = 0;
+    for (uint i = 1; i <= label_max; i++) {
+        assert(90 >= ps[i].deg);
+
+        if (ps[i].area < total_area/100) continue;
+
+        const double rightness = 1 - ((90 - ps[i].deg) / 90.0); // 慣性主軸がx軸に対して直角か
+        const double score = ps[i].area * rightness;
+        if (max_score < score) {
+            max_score = score;
+            max_index = i;
+        }
+    }
+
+    if (max_index == 0) {
+        fprintf(stderr, "extract_face: could not find the face\n");
+        return;
+    }
+
+    for (size_t i = 0; i < orig->height; i++) {
+        for(size_t j = 0; j < orig->width; j++) {
+            if (mask->image[i][j] != max_index) orig->image[i][j] = 0;
+        }
+    }
+}
 
 int main(int argc, char** argv) {
 
@@ -606,10 +722,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!label_all(img)) {
-        fprintf(stderr, "main: error in labeling\n");
-        return 1;
-    }
+    PNM* bin = malloc(sizeof(PNM));
+    *bin = *img;
+
+    smooth_with_median(bin);
+
+    const uint th = find_threshold(bin);
+    binarize(bin, th);
+
+    uint label_max;
+    label_all(bin, &label_max);
+
+    Props* ps = get_region_props(bin, label_max);
+    write_image("tmp.pgm", bin);
+
+    extract_face(img, bin, ps, label_max);
 
     if (!write_image(argv[2], img)) {
         fprintf(stderr, "main: error in writing image\n");
