@@ -1,9 +1,11 @@
 #include <assert.h>
+#include <limits.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define WIDTH_MAX 4096
 #define HEIGHT_MAX 4096
@@ -13,6 +15,9 @@
 #undef uint
 // PGMでは各要素の値は16ビットで十分
 typedef unsigned short uint;
+
+// 画素の総和などの大きな値を格納する型
+typedef unsigned long long big_uint;
 
 typedef struct {
     char magic[3];
@@ -169,7 +174,7 @@ void pixelize(PNM* img, size_t block_size) {
     for(size_t i = 0; i < img->height; i += block_size) {
         for(size_t j = 0; j < img->width; j += block_size) {
             // ブロック内の画素値の平均を求める
-            unsigned long long avg = 0;
+            big_uint avg = 0;
             size_t cnt = 0;
             for(size_t k = 0; k < block_size && i+k < img->height; k++) {
                 for(size_t l = 0; l < block_size && j+l < img->width; l++) {
@@ -471,8 +476,8 @@ uint find_threshold(const PNM* img) {
         // 漸化式を使わない場合
         /*
         for(uint i = 0; i <= max; i++) {
-            unsigned long long omega_tmp = 0;
-            unsigned long long mu_tmp = 0;
+            big_uint omega_tmp = 0;
+            big_uint mu_tmp = 0;
             for (uint j = 0; j <= i; j++) {
                 omega_tmp += ni[j];
                 mu_tmp += j*ni[j];
@@ -697,20 +702,109 @@ void extract_face(PNM* orig, const PNM* mask, Props* ps, uint label_max) {
     }
 }
 
-int main(int argc, char** argv) {
+#define DIFF(x, y) ((x) > (y) ? (x) - (y) : (y) - (x))
 
-    /*
-#define GET_DOUBLE_ARG(n, to, arg_desc)\
-    if (!get_double(argv[(n)], (to))) {\
-        fprintf(stderr, "main: error in parsing "arg_desc"\n");\
-        return 1;\
+big_uint find_nearest_region(const PNM* tgt, const PNM* tpl, Point* nearest) {
+    big_uint min_dist = ULLONG_MAX;
+
+    for (size_t i = 0; i <= (tgt->height - tpl->height); i++) {
+        for (size_t j = 0; j <= (tgt->width - tpl->width); j++) {
+            big_uint dist = 0;
+            for (size_t k = 0; k < tpl->height; k++) {
+                for (size_t l = 0; l < tpl->width; l++) {
+                    dist += DIFF(tgt->image[i+k][j+l], tpl->image[k][l]);
+
+                    // 最小の距離より大きい値になった時点で
+                    // この位置での計算を中止する
+                    if (dist >= min_dist) {
+                        goto LARGER;
+                    }
+                }
+            }
+
+            // このコードは最小値が更新されたとき
+            // にのみ実行される
+            // (その他の場合はgotoで飛び越える)
+            min_dist = dist;
+            nearest->y = i;
+            nearest->x = j;
+
+LARGER:;
+        }
     }
-    */
 
-    const int nargs = 3;
+    return min_dist;
+}
+
+double find_similar_region(const PNM* tgt, const PNM* tpl, Point* similar) {
+    // テンプレートの画素二乗和をあらかじめ計算しておく
+    big_uint tpl_sqsum = 0;
+    for (size_t i = 0; i < tpl->height; i++) {
+        for (size_t j = 0; j < tpl->width; j++) {
+            uint px = tpl->image[i][j];
+            tpl_sqsum += px*px;
+        }
+    }
+
+    double max_sim = 0;
+    for (size_t i = 0; i <= (tgt->height - tpl->height); i++) {
+        for (size_t j = 0; j <= (tgt->width - tpl->width); j++) {
+            big_uint dot = 0;
+            big_uint region_sqsum = 0;
+            for (size_t k = 0; k < tpl->height; k++) {
+                for (size_t l = 0; l < tpl->width; l++) {
+                    const uint px = tgt->image[i+k][j+l];
+                    dot += px * tpl->image[k][l];
+                    region_sqsum += px * px;
+                }
+            }
+
+            const double sim = dot / (sqrt(tpl_sqsum) * sqrt(region_sqsum));
+
+            if (sim > max_sim) {
+                max_sim = sim;
+                similar->y = i;
+                similar->x = j;
+            }
+        }
+    }
+
+    return max_sim;
+}
+
+// 左上の点 p1 と 右下の点 p2 で貼られる長方形を白線でマークする
+void mark_region(PNM* img, Point p1, Point p2) {
+    for(size_t i = p1.y; i <= p2.y; i++) {
+        img->image[i][p1.x] = img->image[i][p2.x] = img->max;
+    }
+    for(size_t i = p1.x; i <= p2.x; i++) {
+        img->image[p1.y][i] = img->image[p2.y][i] = img->max;
+    }
+}
+
+void mark_tpl_region(PNM* img, const PNM* tpl, Point p) {
+    Point p2 = {.y = p.y + tpl->height, .x = p.x + tpl->width};
+    mark_region(img, p, p2);
+}
+
+#define ETIME_BEGIN() \
+    struct timespec start;\
+    struct timespec end;\
+    clock_gettime(CLOCK_MONOTONIC, &start);\
+    do{}while(0)
+
+#define ETIME_LAP() \
+    clock_gettime(CLOCK_MONOTONIC, &end);\
+    printf("time: %ld\n", ((end.tv_nsec - start.tv_nsec) + (end.tv_sec - start.tv_sec)*1000000000)/1000000 );\
+    start = end;\
+    do{}while(0)
+
+
+int main(int argc, char** argv) {
+    const int nargs = 4;
     if (argc != nargs) {
         fprintf(stderr, "expected %d arguments, got %d\n", nargs, argc);
-        fprintf(stderr, "%s [input] [output]\n", argv[0]);
+        fprintf(stderr, "%s [input] [template] [output]\n", argv[0]);
         return 0;
     }
 
@@ -722,23 +816,30 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    PNM* bin = malloc(sizeof(PNM));
-    *bin = *img;
+    PNM* tpl = malloc(sizeof(PNM));
+    if (!read_image(argv[2], tpl)) {
+        fprintf(stderr, "main: error in reading template\n");
+        return 1;
+    }
 
-    smooth_with_median(bin);
+    ETIME_BEGIN();
 
-    const uint th = find_threshold(bin);
-    binarize(bin, th);
+    Point p1;
+    big_uint dist = find_nearest_region(img, tpl, &p1);
+    printf("%zu %zu %llu\n", p1.y, p1.x, dist);
 
-    uint label_max;
-    label_all(bin, &label_max);
+    ETIME_LAP();
 
-    Props* ps = get_region_props(bin, label_max);
-    write_image("tmp.pgm", bin);
+    Point p2;
+    double sim = find_similar_region(img, tpl, &p2);
+    printf("%zu %zu %f\n", p2.y, p2.x, sim);
 
-    extract_face(img, bin, ps, label_max);
+    ETIME_LAP();
 
-    if (!write_image(argv[2], img)) {
+    mark_tpl_region(img, tpl, p1);
+    mark_tpl_region(img, tpl, p2);
+
+    if (!write_image(argv[3], img)) {
         fprintf(stderr, "main: error in writing image\n");
         return 1;
     }
