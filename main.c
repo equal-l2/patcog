@@ -11,6 +11,7 @@
 #define HEIGHT_MAX 4096
 #define QUEUE_SIZE 65536
 #define PI 3.1415926535897932385
+#define DIFF(x, y) ((x) > (y) ? (x) - (y) : (y) - (x))
 
 #undef uint
 // PGMでは各要素の値は16ビットで十分
@@ -631,13 +632,14 @@ typedef struct {
 } Props;
 
 // 各領域の性質を調べる
+// 戻り値配列の0番目は黒領域の情報で、通常使用しない
 Props* get_region_props(const PNM* img, uint label_max) {
     Props* ret = calloc(label_max + 1, sizeof(Props));
 
     for (size_t i = 0; i < img->height; i++) {
         for (size_t j = 0; j < img->width; j++) {
             const uint pval = img->image[i][j];
-            if (pval != 0 && pval <= label_max) {
+            if (pval <= label_max) {
                 ret[pval].area++;
                 ret[pval].xcenter += j;
                 ret[pval].ycenter += i;
@@ -648,7 +650,7 @@ Props* get_region_props(const PNM* img, uint label_max) {
         }
     }
 
-    for (size_t i = 1; i <= label_max; i++) {
+    for (size_t i = 0; i <= label_max; i++) {
         const size_t area = ret[i].area;
 
         ret[i].xcenter /= area;
@@ -665,7 +667,7 @@ Props* get_region_props(const PNM* img, uint label_max) {
     return ret;
 }
 
-void print_props(const Props* ps, uint label_max) {
+void print_props(const Props ps[], uint label_max) {
     printf("label num   area   xcenter   ycenter\n");
     for (uint i = 1; i <= label_max; i++) {
         printf("%-9hu   %-5zu  %-8zu  %-8zu\n", i, ps[i].area, ps[i].xcenter, ps[i].ycenter);
@@ -702,7 +704,6 @@ void extract_face(PNM* orig, const PNM* mask, Props* ps, uint label_max) {
     }
 }
 
-#define DIFF(x, y) ((x) > (y) ? (x) - (y) : (y) - (x))
 
 big_uint find_nearest_region(const PNM* tgt, const PNM* tpl, Point* nearest) {
     big_uint min_dist = ULLONG_MAX;
@@ -787,6 +788,89 @@ void mark_tpl_region(PNM* img, const PNM* tpl, Point p) {
     mark_region(img, p, p2);
 }
 
+void invert_brightness(PNM* img) {
+    for(size_t i = 0; i < img->height; i++) {
+        for(size_t j = 0; j < img->width; j++) {
+            img->image[i][j] = img->max - img->image[i][j];
+        }
+    }
+}
+
+// 特徴値をもつデータ
+typedef struct {
+    size_t feat;      // 特徴量
+    size_t idx_clst;  // 所属するクラスタのindex
+} Feat;
+
+void cluster_by_kmeans(Feat feats[], size_t n_feats, size_t n_clsts) {
+    assert(n_feats >= n_clsts);
+
+    // 各データの所属クラスタを初期化
+    for (size_t i = 0; i < n_feats; i++) {
+        feats[i].idx_clst = 0;
+    }
+
+    typedef struct {
+        size_t centre;    // クラスタの中心
+        size_t n_membres; // クラスタに所属するデータ数
+        size_t sum_feats; // 所属データの特徴量の和
+    } Cluster;
+    Cluster* clsts = calloc(n_clsts, sizeof(Cluster));
+
+    // 仮に、各クラスタの中心を先頭のいくつかのデータの特徴量からとる
+    for (size_t i = 0; i < n_clsts; i++) {
+        clsts[i].centre = feats[i].feat;
+    }
+
+    bool finished;
+    do {
+        finished = true;
+        // 各データの所属クラスタを決定する
+        for (size_t i = 0; i < n_feats; i++) {
+            size_t min_dist = SIZE_MAX;
+            for (size_t j = 0; j < n_clsts; j++) {
+                size_t dist = DIFF(clsts[j].centre, feats[i].feat);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    feats[i].idx_clst = j;
+                }
+            }
+
+            // この時点で、今回の i におけるこのデータの
+            // 所属クラスタが決定したのでクラスタ情報に反映する
+            clsts[feats[i].idx_clst].n_membres++;
+            clsts[feats[i].idx_clst].sum_feats += feats[i].feat;
+        }
+
+        // 各クラスタの中心を計算
+        for (size_t i = 0; i < n_clsts; i++) {
+            assert(clsts[i].n_membres != 0);
+
+            // 新たなクラスタ中心を計算する
+            // (変化を見るため古い中心を覚えておく)
+            size_t old_centre = clsts[i].centre;
+            clsts[i].centre = clsts[i].sum_feats / clsts[i].n_membres;
+
+            // 中心が変化した場合はループを継続する
+            if (clsts[i].centre != old_centre) {
+                finished = false;
+            }
+
+            // 次回ループに備えてクラスタ情報を初期化
+            clsts[i].sum_feats = 0;
+            clsts[i].n_membres = 0;
+        }
+    } while (!finished);
+}
+
+void cutout_template(const PNM* img, PNM* tpl, Point p) {
+    for (size_t i = 0; i < tpl->height; i++) {
+        for (size_t j = 0; j < tpl->width; j++) {
+            tpl->image[i][j] = img->image[i+p.y][j+p.x];
+        }
+    }
+}
+
 #define ETIME_BEGIN() \
     struct timespec start;\
     struct timespec end;\
@@ -799,48 +883,45 @@ void mark_tpl_region(PNM* img, const PNM* tpl, Point p) {
     start = end;\
     do{}while(0)
 
-
 int main(int argc, char** argv) {
-    const int nargs = 4;
+    const int nargs = 5;
     if (argc != nargs) {
-        fprintf(stderr, "expected %d arguments, got %d\n", nargs, argc);
-        fprintf(stderr, "%s [input] [template] [output]\n", argv[0]);
+        fprintf(stderr, "expected %d arguments, got %d\n", nargs-1, argc-1);
+        fprintf(stderr, "%s [input] [template input] [output] [template output]\n", argv[0]);
         return 0;
     }
 
+    const char* input = argv[1];
+    const char* input_tpl = argv[2];
+    const char* output = argv[3];
+    const char* output_tpl = argv[4];
+
     // 画素配列は大きいのでヒープに置く
     PNM* img = malloc(sizeof(PNM));
+    PNM* tpl = malloc(sizeof(PNM));
 
-    if (!read_image(argv[1], img)) {
+    if (!read_image(input, img)) {
         fprintf(stderr, "main: error in reading image\n");
         return 1;
     }
-
-    PNM* tpl = malloc(sizeof(PNM));
-    if (!read_image(argv[2], tpl)) {
+    if (!read_image(input_tpl, tpl)) {
         fprintf(stderr, "main: error in reading template\n");
         return 1;
     }
 
-    ETIME_BEGIN();
+    Point p;
+    double sim = find_similar_region(img, tpl, &p);
+    printf("similarity: %f\n", sim);
 
-    Point p1;
-    big_uint dist = find_nearest_region(img, tpl, &p1);
-    printf("%zu %zu %llu\n", p1.y, p1.x, dist);
+    cutout_template(img, tpl, p);
+    mark_tpl_region(img, tpl, p);
 
-    ETIME_LAP();
-
-    Point p2;
-    double sim = find_similar_region(img, tpl, &p2);
-    printf("%zu %zu %f\n", p2.y, p2.x, sim);
-
-    ETIME_LAP();
-
-    mark_tpl_region(img, tpl, p1);
-    mark_tpl_region(img, tpl, p2);
-
-    if (!write_image(argv[3], img)) {
+    if (!write_image(output, img)) {
         fprintf(stderr, "main: error in writing image\n");
+        return 1;
+    }
+    if (!write_image(output_tpl, tpl)) {
+        fprintf(stderr, "main: error in writing template\n");
         return 1;
     }
 }
